@@ -11,9 +11,10 @@ from typing import Any, Dict, Optional
 
 from config.settings import settings
 from domain.schemas import ExtractResponse, Cabecera, Linea
+from infrastructure.export.excel_writer import write_two_sheet_excel
 
 
-def _parse_num(val: Optional[str]) -> Optional[float]:
+def _parse_num(val: Optional[str | float]) -> Optional[float]:
     if val is None:
         return None
     s = str(val).strip()
@@ -33,10 +34,10 @@ def _parse_num(val: Optional[str]) -> Optional[float]:
 
 def step_postprocess(context: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Genera JSON por documento:
-      - cabecera_*.json  (lista con una fila)
-      - lineas_*.json    (lista con n filas)
-    Mantiene también el JSON "combinado" legacy: albaran_*.json
+    Genera por documento:
+      - cabecera_*.json, lineas_*.json
+      - albaran_*.json (combinado legacy)
+      - albaran_*.xlsx (2 hojas: cabecera, lineas)
     """
     logger: logging.Logger = context["logger"]
     out_dir = Path(settings.output_dir)
@@ -81,16 +82,21 @@ def step_postprocess(context: Dict[str, Any]) -> Dict[str, Any]:
     combined_file = out_dir / f"albaran_{cabecera_id}.json"
     combined_file.write_text(json.dumps(final_json, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # Nuevos JSON separados (por documento)
+    # JSON separados (por documento)
     cabecera_file = out_dir / f"cabecera_{cabecera_id}.json"
     lineas_file = out_dir / f"lineas_{cabecera_id}.json"
     cabecera_file.write_text(json.dumps([cabecera_row], ensure_ascii=False, indent=2), encoding="utf-8")
     lineas_file.write_text(json.dumps(lineas_out, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    logger.info("Guardado: %s, %s (y combinado %s)", cabecera_file.name, lineas_file.name, combined_file.name)
+    # Excel por documento (2 pestañas)
+    xlsx_file = out_dir / f"albaran_{cabecera_id}.xlsx"
+    write_two_sheet_excel(xlsx_file, [cabecera_row], lineas_out)
+
+    logger.info("Guardado: %s, %s, %s (y combinado %s)", cabecera_file.name, lineas_file.name, xlsx_file.name, combined_file.name)
 
     context["cabecera_row"] = cabecera_row
     context["lineas_rows"] = lineas_out
     context["output_file"] = str(combined_file)
     context["output_json"] = final_json
+    context["output_xlsx"] = str(xlsx_file)
     return context

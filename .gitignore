@@ -189,4 +189,4 @@ cython_debug/
 *.pdf
 *.jpeg
 *.jpg
-
+*.json
