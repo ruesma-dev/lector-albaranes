@@ -31,6 +31,10 @@ class Linea(BaseModel):
         None,
         description="Código manuscrito/indicaciones del jefe de obra para imputación de la línea",
     )
+    # ⬇️ NUEVO: probabilidad 0–100 (número puro); aceptamos str o float
+    confianza_pct: Optional[float | str] = Field(
+        None, description="Probabilidad de acierto (0–100) para el codigo_imputacion de esta línea"
+    )
 
 
 class ExtractResponse(BaseModel):

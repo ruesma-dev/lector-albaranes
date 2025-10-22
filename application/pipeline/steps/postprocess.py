@@ -14,18 +14,27 @@ from domain.schemas import ExtractResponse, Cabecera, Linea
 from infrastructure.export.excel_writer import write_two_sheet_excel
 
 
-def _parse_num(val: Optional[str | float]) -> Optional[float]:
+def _parse_num(val: Optional[str | float | int]) -> Optional[float]:
     if val is None:
         return None
+    # ya numérico
+    if isinstance(val, (int, float)):
+        return float(val)
+
     s = str(val).strip()
     if not s:
         return None
+
+    # elimina todo salvo dígitos, coma, punto y signo
     s = re.sub(r"[^\d,.\-]", "", s)
+
+    # normaliza coma decimal europea
     if s.count(",") == 1 and s.count(".") == 0:
         s = s.replace(",", ".")
     elif s.count(",") > 1 and s.count(".") == 0:
         parts = s.split(",")
         s = "".join(parts[:-1]) + "." + parts[-1]
+
     try:
         return float(s)
     except ValueError:
@@ -61,18 +70,33 @@ def step_postprocess(context: Dict[str, Any]) -> Dict[str, Any]:
 
     lineas_out = []
     for l in (result.lineas or []):
-        lineas_out.append(
-            {
-                "cabecera_id": cabecera_id,
-                "codigo": l.codigo,
-                "cantidad": _parse_num(l.cantidad),
-                "concepto": l.concepto,
-                "precio": _parse_num(l.precio),
-                "descuento": _parse_num(l.descuento),
-                "precio_neto": _parse_num(l.precio_neto),
-                "codigo_imputacion": l.codigo_imputacion,
-            }
-        )
+        # tolerante: si el modelo viniera con otro nombre (backup)
+        confianza_raw = getattr(l, "confianza_pct", None)
+        if confianza_raw is None:
+            # por si en algún prompt viejo vino como 'confianza' o 'confidence'
+            confianza_raw = getattr(l, "confianza", None) or getattr(l, "confidence", None)
+
+        ln = {
+            "cabecera_id": cabecera_id,
+            # 👇 nos aseguramos de copiar 'codigo'
+            "codigo": l.codigo,
+            "concepto": l.concepto,
+            "cantidad": _parse_num(l.cantidad),
+            "precio": _parse_num(l.precio),
+            "descuento": _parse_num(l.descuento),
+            "precio_neto": _parse_num(l.precio_neto),
+            "codigo_imputacion": l.codigo_imputacion,
+            # 👇 nuevo campo: convertimos a float 0–100 si es posible
+            "confianza_pct": _parse_num(confianza_raw),
+        }
+        lineas_out.append(ln)
+
+    # DEBUG: muestra la primera línea que se escribirá (una sola vez)
+    if lineas_out:
+        try:
+            logger.debug("Linea[0] postprocess → %s", json.dumps(lineas_out[0], ensure_ascii=False))
+        except Exception:
+            logger.debug("Linea[0] postprocess → %s", lineas_out[0])
 
     # JSON combinado legacy
     final_json = {
@@ -92,7 +116,10 @@ def step_postprocess(context: Dict[str, Any]) -> Dict[str, Any]:
     xlsx_file = out_dir / f"albaran_{cabecera_id}.xlsx"
     write_two_sheet_excel(xlsx_file, [cabecera_row], lineas_out)
 
-    logger.info("Guardado: %s, %s, %s (y combinado %s)", cabecera_file.name, lineas_file.name, xlsx_file.name, combined_file.name)
+    logger.info(
+        "Guardado: %s, %s, %s (y combinado %s)",
+        cabecera_file.name, lineas_file.name, xlsx_file.name, combined_file.name
+    )
 
     context["cabecera_row"] = cabecera_row
     context["lineas_rows"] = lineas_out
