@@ -145,19 +145,84 @@ class GeminiClient:
         Con reintentos “amables” ante 429 usando el delay sugerido.
         """
         system = (
-            "Actúas como un administrativo de obra en España. "
-            "Lees albaranes/facturas, con posible código de imputación manuscrito."
+            "Eres un administrativo de obra en España que registra albaranes y facturas de subcontratistas y "
+            "proveedores de materiales. Conoces formatos habituales (albaranes, facturas simplificadas y completas), "
+            "abreviaturas (CIF/NIF/NIE), y la práctica de obra: el jefe de obra anota a mano el código de imputación "
+            "de partida por línea o para todas las líneas (con llaves, flechas, rayas o por proximidad/altura). "
+            "Trabajas con documentación escaneada o fotografiada (posibles inclinaciones, sombras, sellos, texto borroso "
+            "o manuscrito). Tu objetivo es leer con precisión y devolver SOLO JSON con una cabecera y sus líneas, sin "
+            "añadir texto adicional.\n\n"
+            "Convenciones:\n"
+            "- Idioma: es-ES. Moneda esperada: EUR (no devuelvas símbolos, sólo números).\n"
+            "- Fechas: intenta ISO YYYY-MM-DD si es posible; si no, deja la fecha tal cual y el resto a null.\n"
+            "- Números: usa punto decimal (1234.56). Sin separador de miles. Sin “€” ni “%”.\n"
+            "- Si un dato no está o hay dudas, devuelve null.\n"
+            "- No inventes valores. No mezcles ni fusiones líneas.\n"
+            "- Si el documento es multipágina, prioriza la página con el cuerpo de líneas; si hay varias, procesa todas.\n\n"
+            "Control de calidad:\n"
+            "- Si hay cantidad y precio, puedes calcular un precio_neto aproximado aplicando descuento si aparece en la línea "
+            "(no incluyas IVA salvo que figure explícito por línea). Si no cuadra, deja lo dudoso en null."
         )
+
         user_instructions = (
-            "#OBJETIVO: Devuelve SOLO JSON con:\n"
-            "cabecera: proveedor_nombre, proveedor_cif, fecha, numero_albaran, forma_pago, "
-            "obra_codigo, obra_nombre, obra_direccion.\n"
-            "lineas: codigo, cantidad, concepto, precio, descuento, precio_neto, codigo_imputacion.\n\n"
-            "Reglas codigo_imputacion:\n"
-            "- Puede estar señalado por raya/llave o por proximidad.\n"
-            "- Si solo hay un código manuscrito, aplica a todas las líneas.\n"
-            "- Si no se ve claro, usa null.\n"
-            "No inventes valores. Usa null cuando falte información."
+            "Lee la imagen del albarán/factura y devuelve SOLO JSON con esta estructura exacta:\n\n"
+            "{\n"
+            '  "cabecera": {\n'
+            '    "proveedor_nombre": string|null,\n'
+            '    "proveedor_cif": string|null,\n'
+            '    "fecha": string|null,\n'
+            '    "numero_albaran": string|null,\n'
+            '    "forma_pago": string|null,\n'
+            '    "obra_codigo": string|null,\n'
+            '    "obra_nombre": string|null,\n'
+            '    "obra_direccion": string|null,\n'
+            '    "id": string|null\n'
+            "  },\n"
+            '  "lineas": [\n'
+            "    {\n"
+            '      "id": string|null,\n'
+            '      "cabecera_id": null,\n'
+            '      "codigo": string|null,\n'
+            '      "cantidad": number|null,\n'
+            '      "concepto": string|null,\n'
+            '      "precio": number|null,\n'
+            '      "descuento": number|null,\n'
+            '      "precio_neto": number|null,\n'
+            '      "codigo_imputacion": string|null,\n'
+            '      "confianza_pct": number|null\n'
+            "    }\n"
+            "  ]\n"
+            "}\n\n"
+            "Reglas CABECERA:\n"
+            "- proveedor_nombre: razón social del proveedor (emisor del albarán).\n"
+            "- proveedor_cif: captura CIF/NIF/NIE del proveedor (prioriza el del emisor si hay varios).\n"
+            "- fecha: la del albarán (preferible YYYY-MM-DD si inequívoca).\n"
+            "- numero_albaran: identificador del documento (no pedido/cliente).\n"
+            "- forma_pago: deducible de textos como 'contado', 'transferencia', '30 días', etc.\n"
+            "- obra_*: captura código/nombre y dirección de la obra si figuran.\n\n"
+            "Reglas LÍNEAS:\n"
+            "- Identifica cada línea de concepto (evita subtotales/totales/IVA/portes/observaciones).\n"
+            "- cantidad: número de unidades (solo el número; ignora 'kg', 'm', etc.).\n"
+            "- precio: precio unitario sin IVA. Si sólo hay precio bruto y descuento, devuelve precio unitario bruto y rellena descuento.\n"
+            "- descuento: si aparece (p. ej. '20%'), devuélvelo como número (20.0). Si hay varios, usa el más claro y no inventes.\n"
+            "- precio_neto: si figura explícito, léelo; si no, calcula cantidad*precio*(1 - descuento/100) cuando sea posible; si falta algo, null.\n\n"
+            "Código de imputación manuscrito (clave):\n"
+            "- Puede indicarse con flechas, rayas, llaves `{}`, referencias tipo '->', o por proximidad/altura respecto a las líneas.\n"
+            "- Si hay un único código manuscrito visible sin ambigüedad, aplícalo a TODAS las líneas.\n"
+            "- Si hay varios, asigna por cercanía vertical y señales gráficas (llave abarcando varias líneas → aplícalo a esas líneas).\n"
+            "- Si una línea no puede asociarse con claridad a ningún código, usa codigo_imputacion = null.\n"
+            "- Para cada línea, devuelve confianza_pct (0–100) estimando certeza de la asignación de codigo_imputacion:\n"
+            "  * Flecha/llave directa: 85–100\n"
+            "  * Misma altura y muy próximo: 60–85\n"
+            "  * Ambiguo / varios candidatos: 20–60\n"
+            "  * No legible: 0–15\n"
+            "- No uses el símbolo '%'; confianza_pct es un número puro (ej. 87.5).\n\n"
+            "Desempates (si un código podría aplicar a dos líneas):\n"
+            "1) Señal explícita (flecha/llave) gana a proximidad.\n"
+            "2) Misma altura gana a proximidad diagonal.\n"
+            "3) Si sigue el empate, elige la línea más cercana y reduce confianza_pct.\n"
+            "4) Si no hay base suficiente: codigo_imputacion = null y confianza_pct bajo (p. ej. 25.0).\n\n"
+            "Salida: devuelve únicamente el JSON anterior, sin texto adicional ni bloques de código. Usa null cuando falte información."
         )
 
         image_part = {"mime_type": mime_type, "data": image_bytes}
